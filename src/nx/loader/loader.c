@@ -1265,6 +1265,7 @@ static int load_exefs_program(const char* entry, char* const* names, char* const
         }
     }
     free(nacp_path);
+    program->shown = snx_shown_read(root);
     rc = 0;
 done:
     free(exefs);
@@ -1307,6 +1308,7 @@ void snx_free_program(SnxProgram* program) {
     free(program->npdm_data);
     free(program->entry_path); /* the other paths too */
     free(program->nacp);
+    free(program->shown);
     memset(program, 0, sizeof(*program));
 }
 

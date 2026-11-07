@@ -7,6 +7,7 @@
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/filesystem/fs_tree.h"
 #include "common/utilities/mii_model.h"
+#include "common/utilities/romfs.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/state_io.h"
 #include "nx/runtime/options.h"
@@ -119,11 +120,12 @@ static void dump_map(SnxDump* dump, PFileMap* base_map, PFileMap* addon_map, con
         (dump->patch.found && snx_nca_keys(dump, &dump->patch, "The update's Program NCA")) ||
         (dump->aoc.found && snx_nca_keys(dump, &dump->aoc, "The DLC's Data NCA")))
         fatal("A dump the game reads in place needs keys its keys file does not have: the line before says which");
-    if (base && (plat_file_map_sized(base_map, base, snx_file_size(base)) ||
-                 snx_hac_map(dump->hac, dump->base, base_map->data, base_map->size)))
+    /* a NUP's reads go to its file: hactool has no container of it to map */
+    if (base && dump->base >= 0 && (plat_file_map_sized(base_map, base, snx_file_size(base)) ||
+                                    snx_hac_map(dump->hac, dump->base, base_map->data, base_map->size)))
         fatal("Could not map the game's dump %s", base);
-    if (addon && (plat_file_map_sized(addon_map, addon, snx_file_size(addon)) ||
-                  snx_hac_map(dump->hac, dump->update, addon_map->data, addon_map->size)))
+    if (addon && dump->update >= 0 && (plat_file_map_sized(addon_map, addon, snx_file_size(addon)) ||
+                                       snx_hac_map(dump->hac, dump->update, addon_map->data, addon_map->size)))
         fatal("Could not map the add-on's dump %s", addon);
     snx_hac_on_exit(NULL, NULL);
 }
@@ -263,6 +265,7 @@ static void dlcs_open(const char* keys, const char* title_keys) {
         else {
             dump_map(&aoc->dump, NULL, &aoc->map, NULL, dump, 0, keys, title_keys, repo);
             snx_hac_on_exit(dump_exit, NULL);
+            if (snx_dump_pick_aoc(&aoc->dump, ids[i].id)) fatal("Could not find the DLC %s in its dump %s", text, dump);
             aoc->fs = snx_dump_aoc_fs(&aoc->dump);
             if (!aoc->fs) fatal("Could not read the DLC in its dump %s: the line before says why", dump);
             snx_hac_on_exit(NULL, NULL);
@@ -584,23 +587,7 @@ int fs_add_virtual_file(const char* path, const void* data, u64 size) {
     0x20 /* parent, sibling, u64 data offset, u64 size, next in bucket, name length; the name */
 static void put32(u8* p, u32 v) { snx_st_le32(p, v); } /* the image is the guest's: little-endian */
 static void put64(u8* p, u64 v) { snx_st_le64(p, v); }
-/* the bucket of an entry named name in the directory at table offset parent. The name's bytes count unsigned */
-/* The format fixes both the seed (the parent's offset xor 123456789) and the step (rotate right by 5, then xor in the
-   next byte): the game's own tables were built with it */
-static u32 rhash(u32 parent, const char* name) {
-    u32 h = parent ^ 123456789u;
-    const unsigned char* p;
-    for (p = (const unsigned char*)name; *p; p++) h = ((h >> 5) | (h << 27)) ^ *p;
-    return h;
-}
-/* the buckets of a hash table for n entries */
-static u32 hcount(u32 n) {
-    u32 c = n;
-    if (n < 3) return 3;
-    if (n < 19) return n | 1;
-    while (c % 2 == 0 || c % 3 == 0 || c % 5 == 0 || c % 7 == 0 || c % 11 == 0 || c % 13 == 0 || c % 17 == 0) c++;
-    return c;
-}
+static u32 rhash(u32 parent, const char* name) { return snx_romfs_hash(parent, name, strlen(name)); }
 static u64 entry_size(u32 fixed, const char* name) { return fixed + ((strlen(name) + 3) & ~(size_t)3); }
 /* A folder or file of the RomFS while its image is laid out: the game's, from the romfs/ folder (node) or from its own
    image (at base in it), or a mod's laid over it. Children in strcmp order, as the index keeps them */
@@ -697,8 +684,8 @@ static void romfs_build(const RNode* dir, const char* what) {
     u8* m;
     scan(dir, &ndirs, &nfiles, &dir_bytes, &file_bytes);
     if (dir_bytes >= ROM_NONE || file_bytes >= ROM_NONE) fatal("RomFS: the tables of romfs/ are too large\n");
-    dbuckets = hcount(ndirs);
-    fbuckets = hcount(nfiles);
+    dbuckets = snx_romfs_buckets(ndirs);
+    fbuckets = snx_romfs_buckets(nfiles);
     dhash = 0x50;
     dtab = dhash + (u64)dbuckets * 4;
     fhash = dtab + dir_bytes;
@@ -1710,7 +1697,7 @@ static SvcObj* hostfs_new(const char* root, u32* rc) { /* tree.lock held */
 /* the system archives' stand-in: a RomFS with an empty root folder and nothing else, 0x200 bytes */
 static void emptyrom_init(void) {
     u8* m = g_hle.fs.emptyrom;
-    u32 dbuckets = hcount(1), fbuckets = hcount(0);
+    u32 dbuckets = snx_romfs_buckets(1), fbuckets = snx_romfs_buckets(0);
     u64 dtab = 0x50 + (u64)dbuckets * 4, fhash = dtab + ROM_DIR_ENTRY, ftab = fhash + (u64)fbuckets * 4;
     memset(m + 0x50, 0xFF, (size_t)(dtab - 0x50));
     memset(m + fhash, 0xFF, (size_t)(ftab - fhash));
@@ -1775,7 +1762,7 @@ static u32 miimodel_file_write(u32 i, u8* out) { return snx_mii_model_write(i, o
 #define FILESROM_MAX 64u
 static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, char[32]), u32 (*file_room)(u32),
                          u32 (*file_write)(u32, u8*), u32 (*file_same)(u32), const char* what) {
-    u32 dbuckets = hcount(1), fbuckets = hcount(count);
+    u32 dbuckets = snx_romfs_buckets(1), fbuckets = snx_romfs_buckets(count);
     u64 dhash = 0x50;
     u64 dtab = dhash + (u64)dbuckets * 4;
     u64 fhash = dtab + ROM_DIR_ENTRY;

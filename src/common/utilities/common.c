@@ -2399,6 +2399,26 @@ int snx_nacp_name_why(const unsigned char* nacp, size_t size, char* name, size_t
     free(unpacked);
     return name[0] != 0;
 }
+int snx_shown_valid(const char* text, size_t size) {
+    if (!size || size >= 0x200 || !snx_utf8_valid(text, size, NULL, 0)) return 0;
+    for (size_t i = 0; i < size; ++i)
+        if ((unsigned char)text[i] < 0x20 || text[i] == 0x7f) return 0;
+    return 1;
+}
+char* snx_shown_read(const char* folder) {
+    char* path = snx_path_join(folder, SNX_SHOWN_FILE);
+    size_t size = 0;
+    unsigned char* bytes = path && snx_is_file(path) ? snx_read_file(path, &size) : NULL;
+    char* shown = NULL;
+    if (bytes && snx_shown_valid((const char*)bytes, size)) {
+        shown = (char*)snx_alloc(size + 1);
+        memcpy(shown, bytes, size);
+        shown[size] = 0;
+    }
+    free(bytes);
+    free(path);
+    return shown;
+}
 int snx_nacp_name(const unsigned char* nacp, size_t size, char* name, size_t name_size) {
     return snx_nacp_name_why(nacp, size, name, name_size, NULL, 0);
 }

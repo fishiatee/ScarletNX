@@ -81,6 +81,8 @@ typedef struct {
        (<root>/control.nacp, written there by the extraction) */
     unsigned char* nacp;
     size_t nacp_size;
+    /* The name it shows without a control.nacp, owned by the program, or NULL (SNX_SHOWN_FILE) */
+    char* shown;
 } SnxProgram;
 
 /* The loaders return 0, or -1 with a message in error (cut to error_size, always terminated) and the output struct

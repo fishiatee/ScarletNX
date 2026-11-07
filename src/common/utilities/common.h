@@ -320,6 +320,14 @@ int64_t snx_tell(FILE* f);
 /* 1 when the n bytes at text are well-formed UTF-8 (no overlong form, surrogate, or code point past U+10FFFF), else 0
    and the first 16 of them in hex into hex ("2a 9c e3", "..." after when there are more), when hex_size is not 0 */
 int snx_utf8_valid(const char* text, size_t n, char* hex, size_t hex_size);
+/* A game with a name and no control.nacp keeps it in this file of its data folder, as a NUP can give one. It is not a
+   control.nacp, which the game reads through am: a made-up one would give it save sizes of 0 in place of the defaults
+   that having none gives. Only what shows the game reads it */
+#define SNX_SHOWN_FILE "game.title"
+/* 1 for text fit to show: UTF-8 of a sensible length, on one line */
+int snx_shown_valid(const char* text, size_t size);
+/* the name in folder's SNX_SHOWN_FILE, malloc'd, or NULL without one fit to show */
+char* snx_shown_read(const char* folder);
 /* The game's name in a control.nacp: American English's, else the first language's that has one, in UTF-8 without
    control characters, its titles inflated when the NACP keeps them in deflate (TitleCompression). A name whose bytes
    are not UTF-8 counts as none. 1 when it has one, else 0 and "" */

@@ -11,7 +11,7 @@
 #include <string.h>
 
 typedef struct {
-    const char *base, *update, *name, *out, *keys, *title_keys;
+    const char *base, *update, *name, *out, *keys, *title_keys, *dlc;
     int icon;    /* --icon: the game's icon alone */
     int program; /* --program: the program of the application extracted, 0 its own */
 } ExtractOptions;
@@ -25,16 +25,18 @@ typedef struct {
     SnxU64 total, written;
     double said_at;
     int said;
+    int shown; /* the game has a name without its control.nacp */
 } ExtractState;
 
 static void extract_help(void) {
-    puts("Usage: scarletnx -x BASE.xci|BASE.nsp|BASE.dxci|BASE.dnsp [options]\n"
+    puts("Usage: scarletnx -x BASE.xci|BASE.nsp|BASE.dxci|BASE.dnsp|BASE.nup [options]\n"
          "  --update FILE       Apply a same-title update during extraction, or add a DLC's RomFS image\n"
          "  --name NAME         Output name (default: base dump stem)\n"
          "  --out DIR           Output folder (default: work/NAME of the data folder)\n"
          "  --keys FILE         prod.keys (default: the data folder's, then ~/.switch)\n"
          "  --title-keys FILE   title.keys (same discovery order; optional)\n"
          "  --program N         Program N of an application of several (default: 0, the application's own)\n"
+         "  --dlc ID            Only the DLC of that title ID in a NUP, as its RomFS image\n"
          "  --icon              The game's icon alone, icon.jpg into --out DIR (what Games shows), nothing extracted\n"
          "  --help              Show this help");
     puts("The data folder: --data, else a portable copy's or the user's (scarletnx --help).");
@@ -42,7 +44,8 @@ static void extract_help(void) {
     puts("The user's data folder keeps work/ in its cache folder, $XDG_CACHE_HOME/scarletnx (~/.cache/scarletnx).");
 #endif
     puts("Decrypted content needs no keys. Refuses output containing exefs. A DLC's dump given alone is extracted as\n"
-         "its RomFS image, system/archives/<its title ID>.romfs, where the game's aoc:u finds it.");
+         "its RomFS image, system/archives/<its title ID>.romfs, where the game's aoc:u finds it. A NUP's own updates\n"
+         "are applied, and --dlc takes one of its DLCs alone.");
 }
 
 static char* text_copy(const char* text, size_t size) {
@@ -98,6 +101,8 @@ static int parse_options(int argc, char** argv, ExtractOptions* options) {
             slot = &options->title_keys;
         else if (option_is(argv[i], "--program"))
             slot = &program;
+        else if (option_is(argv[i], "--dlc"))
+            slot = &options->dlc;
         if (!slot) return snx_error("unknown option: %s (scarletnx -x -h lists them)", argv[i]);
         option = argv[i];
         value = strchr(argv[i], '=');
@@ -254,7 +259,7 @@ static void control_nacp(ExtractState* state) {
         why = "out of memory";
     else if (nacp && snx_write_file(to, nacp, size))
         why = "its control.nacp could not be written beside exefs/";
-    if (why) printf("The game keeps the name of its file: %s\n", why);
+    if (why && !state->shown) printf("The game keeps the name of its file: %s\n", why);
     if (nacp && !snx_nacp_name_why(nacp, size, name, sizeof name, reason, sizeof reason))
         printf("The game keeps the name of its file: its control.nacp gives it none, %s\n", reason);
     else if (nacp) { /* what it is, from its own control data */
@@ -344,11 +349,55 @@ done:
     return failed;
 }
 
+/* the NUP's trees written out, its updates over its base: no keys, and no NCA to pick */
+static int extract_nup(ExtractState* state) {
+    char size[32], title[17], *main_path;
+    int failed;
+    state->total = snx_nup_bytes(state->dump.view);
+    state->written = 0;
+    state->said = 0;
+    state->said_at = snx_seconds(); /* a quick one says nothing */
+    snx_title_text(state->dump.program.title_id, title);
+    snx_size_text(state->total, size, sizeof size);
+    printf("Extracting %s%s (%s)\n", title, state->dump.patch.found ? " with its update applied" : "", size);
+    fflush(stdout);
+    failed = snx_nup_extract(state->dump.view, state->exefs, state->romfs, progress_tick, state);
+    if (state->said) progress_say(state, 1);
+    if (failed) return 1;
+    main_path = snx_path_join(state->exefs, "main");
+    if (!main_path) return snx_error("out of memory checking the extraction");
+    failed = !snx_is_file(main_path);
+    free(main_path);
+    if (failed) return snx_error("%s has no main in its ExeFS", state->base);
+    say_extracted(state);
+    char* shown = snx_dump_shown(&state->dump);
+    if (shown) { /* the name beside exefs/ that the launcher and a recompile of this folder read */
+        char* to = snx_path_join(state->out, SNX_SHOWN_FILE);
+        state->shown = to && !snx_write_file(to, shown, strlen(shown));
+        printf("  The game: %s (%s)\n", shown, title);
+        free(to);
+        free(shown);
+    }
+    control_nacp(state);
+    control_icon(state);
+    return 0;
+}
+
 static int extract_files(ExtractState* state, const ExtractOptions* options, const SnxPaths* paths) {
     const SnxNcaRef *program = &state->dump.program, *patch = &state->dump.patch;
     char* main_path;
     SnxU64 title, game;
     int failed;
+    /* a DLC of those a NUP holds, picked by its title ID */
+    if (options->dlc) {
+        SnxU64 id = 0;
+        if (!snx_title_parse(options->dlc, &id)) return snx_error("--dlc %s: not a title ID", options->dlc);
+        if (!snx_nup_is(state->base)) return snx_error("--dlc picks a DLC of a NUP, and %s is not one", state->base);
+        if (snx_dump_open(&state->dump, NULL, state->base, 0, options->keys, options->title_keys, paths->repo, 1) ||
+            snx_dump_pick_aoc(&state->dump, id))
+            return 1;
+        return extract_aoc(state);
+    }
     /* a game, an add-on over it, or a dump of a DLC alone */
     if (state->update || options->program ? snx_dump_open(&state->dump, state->base, state->update, options->program,
                                                           options->keys, options->title_keys, paths->repo, 1)
@@ -360,6 +409,7 @@ static int extract_files(ExtractState* state, const ExtractOptions* options, con
                          state->base);
     if (!program->found) return extract_aoc(state);
     if (state->dump.aoc.found && extract_aoc(state)) return 1;
+    if (state->dump.view) return extract_nup(state);
     /* the keys each NCA picked needs, said before anything is written */
     if (snx_nca_keys(&state->dump, program, "The game's Program NCA") ||
         (patch->found && snx_nca_keys(&state->dump, patch, "The update's Program NCA")))

@@ -566,8 +566,8 @@ if(TARGET hactool_internals)
     snx_swipc(snx-test-fs-service ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/services/types.swipc hle/filesystem/fs.swipc)
     # fs.c reads a game's dump in place through the driver's container.c and hactool
     target_sources(snx-test-fs-service PRIVATE "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/container.c"
-)
-    target_link_libraries(snx-test-fs-service PRIVATE scarletnx-common hactool_internals)
+                   "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/nup.c")
+    target_link_libraries(snx-test-fs-service PRIVATE scarletnx-common hactool_internals snx_zstd)
     add_test(NAME filesystem_raw COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> raw)
     add_test(NAME filesystem_addon_overlay COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> addon-overlay)
     add_test(NAME filesystem_mods COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods)
@@ -1644,12 +1644,14 @@ snx_test_target(snx-test-logscan-age 99)
 add_test(NAME logscan_age COMMAND snx-test-logscan-age)
 
 add_executable(snx-test-driver driver_workflow.c
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/driver.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/driver.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/nup.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/setup.c" "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
     "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/process.c"
     "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c")
 snx_test_target(snx-test-driver 99)
-target_link_libraries(snx-test-driver PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle snx_nx_module)
+target_link_libraries(snx-test-driver PRIVATE snx_test_common snx_setup snx_lz4 snx_zstd OpenSSL::Crypto snx_demangle
+                                              snx_nx_module)
 set_target_properties(snx-test-driver PROPERTIES LINKER_LANGUAGE CXX)
 if(APPLE) # driver/setup.c's weak snx_menu_language, as snx_driver has it: ld64 wants it named
     target_link_options(snx-test-driver PRIVATE "LINKER:-U,_snx_menu_language")
@@ -1660,14 +1662,15 @@ set_tests_properties(driver_workflow PROPERTIES TIMEOUT 60)
 # driver's); its collection case, as the other runs need a game played
 if(NOT WIN32)
     add_executable(snx-test-driver-ready driver_workflow.c
-        "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/driver.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/driver.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/nup.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/setup.c" "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
         "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/process.c"
         "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c")
     snx_test_target(snx-test-driver-ready 99)
     target_compile_definitions(snx-test-driver-ready PRIVATE SNX_DRIVER_READY=1)
-    target_link_libraries(snx-test-driver-ready PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle
-                                                        snx_nx_module)
+    target_link_libraries(snx-test-driver-ready PRIVATE snx_test_common snx_setup snx_lz4 snx_zstd OpenSSL::Crypto
+                                                        snx_demangle snx_nx_module)
     set_target_properties(snx-test-driver-ready PROPERTIES LINKER_LANGUAGE CXX)
     if(APPLE)
         target_link_options(snx-test-driver-ready PRIVATE "LINKER:-U,_snx_menu_language")
@@ -1735,11 +1738,20 @@ add_test(NAME run_ticking COMMAND snx-test-run-ticking)
 
 # C11 for hactool's headers, which build the synthetic dumps (hac_synth.h); extract.c itself stays C99 in the driver
 add_executable(snx-test-extract extract.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/extract.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/nup.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/container.c" "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
     "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c")
 snx_test_target(snx-test-extract 11)
-target_link_libraries(snx-test-extract PRIVATE snx_test_common hactool_internals snx_lz4 OpenSSL::Crypto snx_nx_module)
+target_link_libraries(snx-test-extract PRIVATE snx_test_common hactool_internals snx_lz4 snx_zstd OpenSSL::Crypto
+                                               snx_nx_module)
 add_test(NAME extraction_native COMMAND snx-test-extract)
+# the NUP reader on synthetic containers: its update layering, and each damage it must refuse
+add_executable(snx-test-nup nup.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/nup.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/container.c")
+snx_test_target(snx-test-nup 99)
+target_compile_definitions(snx-test-nup PRIVATE NUP_CACHE_FILE_MAX=0x100000) # its 3 MiB file goes through the stream
+target_link_libraries(snx-test-nup PRIVATE snx_test_common hactool_internals snx_zstd OpenSSL::Crypto)
+add_test(NAME nup_container COMMAND snx-test-nup)
 
 add_executable(snx-test-loader loader_test.c "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
     "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c")

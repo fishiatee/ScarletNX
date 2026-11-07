@@ -66,6 +66,16 @@ int snx_hac_extract(SnxHac* hac, int container, size_t entry, int base_container
    snx_hac_fs_free, and read from the containers' files, or from their mappings (snx_hac_map). Reads are not thread
    safe: their decryption contexts are shared */
 typedef struct SnxHacFs SnxHacFs;
+/* file systems that are not an NCA's, behind the calls below: a NUP's. data is theirs, and free ends it */
+typedef struct {
+    void (*free)(void* data);
+    size_t (*files)(void* data, const SnxHacEntry** files);
+    int (*read)(void* data, size_t file, uint64_t offset, void* buffer, size_t size);
+    uint64_t (*romfs_size)(const void* data);
+    int (*read_romfs)(void* data, uint64_t offset, void* buffer, size_t size);
+} SnxHacFsOps;
+/* NULL when out of memory */
+SnxHacFs* snx_hac_fs_custom(const SnxHacFsOps* ops, void* data);
 /* the container's file as data (size bytes) maps it, for the file systems opened afterwards to read from: 0, or -1
    when one of its entries lies past size. The mapping outlives them */
 int snx_hac_map(SnxHac* hac, int container, const void* data, uint64_t size);

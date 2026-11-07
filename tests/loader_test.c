@@ -546,6 +546,16 @@ static void test_nacp(const char* root, const char* exefs) {
     shown = snx_game_shown("My Game", &program, why, sizeof why); /* the player's name: no control.nacp read */
     CHECK(!strcmp(shown, "My Game") && !why[0]);
     free(shown);
+    program.shown = snx_strdup("Its Own Name"); /* a NUP's, where the control.nacp gives none */
+    shown = snx_game_shown(NULL, &program, why, sizeof why);
+    CHECK(!strcmp(shown, "Its Own Name"));
+    free(shown);
+    shown = snx_game_shown("123456789ABCDEF0", &program, why, sizeof why); /* over a title ID */
+    CHECK(!strcmp(shown, "Its Own Name"));
+    free(shown);
+    shown = snx_game_shown("My Game", &program, why, sizeof why); /* but not over the player's */
+    CHECK(!strcmp(shown, "My Game"));
+    free(shown);
     snx_free_program(&program);
     CHECK(!snx_remove_tree(path));
     free(path);

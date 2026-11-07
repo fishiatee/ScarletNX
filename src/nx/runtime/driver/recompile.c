@@ -37,7 +37,7 @@ const IniOpt* snx_recompile_setting(const char* key) {
 }
 static void usage(void) {
     puts("Usage: scarletnx -r INPUT [NAME] [OPTIONS]\n"
-         "  INPUT                  Game/ExeFS folder, .nro, or an XCI or NSP dump (read in place)\n"
+         "  INPUT                  Game/ExeFS folder, .nro, or an XCI, NSP or NUP dump (read in place)\n"
          "  --name NAME            Output name (default: the title ID, else the NPDM's or input name)\n"
          "  --outdir DIR           Where the game's folder goes (default: recompiled/)\n"
          "  -O LEVEL               Optimization: 0,1,2,3,s,z (default: 2), the setting opt\n"
@@ -271,13 +271,18 @@ static int load_dump(const char* dump, const char* update, int index, const SnxP
     if (!rc && opened.patch.found) rc = snx_nca_keys(&opened, &opened.patch, "The update's Program NCA");
     if (!rc && !(fs = snx_dump_fs(&opened))) rc = 1;
     if (!rc) {
+        char* shown = snx_dump_shown(&opened);
         nacp = snx_dump_nacp(&opened, &nacp_size, &why);
-        if (!nacp && !quiet) printf("The game keeps the name of its file: %s\n", why);
+        if (!nacp && !shown && !quiet) printf("The game keeps the name of its file: %s\n", why);
         reader.read = dump_read;
         reader.source = fs;
         snx_exefs_mods(&mods, &reader, names, files, count);
         rc = snx_load_program_from(&mods.reader, update ? update : dump, nacp, nacp_size, program, error, error_size);
-        if (rc) snx_error("%s", error);
+        if (rc) {
+            snx_error("%s", error);
+            free(shown);
+        } else
+            program->shown = shown;
     }
     snx_hac_fs_free(fs);
     snx_dump_close(&opened);
@@ -610,6 +615,15 @@ static int make_program(const MakeArgs* a, int index) {
         free(nacp);
         if (failed) {
             snx_error("cannot write the game's control.nacp in %s", data);
+            goto done;
+        }
+    }
+    if (program.shown) { /* the same, for a game without one */
+        char* file = snx_path_join(data, SNX_SHOWN_FILE);
+        int failed = !file || snx_write_file(file, program.shown, strlen(program.shown));
+        free(file);
+        if (failed) {
+            snx_error("cannot write the game's name in %s", data);
             goto done;
         }
     }

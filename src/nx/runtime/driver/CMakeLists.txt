@@ -9,7 +9,7 @@ target_link_libraries(snx_nx_module PUBLIC scarletnx-common)
 # the route list (loader/hook_routes.c): the symbols the hooks name, whose calls go through their dispatch slots
 include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
 snx_hook_routes(snx_nx_module)
-add_library(snx_driver STATIC driver.c container.c extract.c game_name.c recompile.c setup.c toolchain.c mcp.c
+add_library(snx_driver STATIC driver.c container.c extract.c nup.c game_name.c recompile.c setup.c toolchain.c mcp.c
                               mcp_edenprobe.c mcp_gdb.c ../../loader/loader.c ../../loader/match.c)
 set_target_properties(snx_driver PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_definitions(snx_driver PRIVATE
@@ -18,7 +18,7 @@ target_compile_definitions(snx_driver PRIVATE
     SNX_COMMON_INCLUDE="${PROJECT_SOURCE_DIR}/src/common")
 target_compile_options(snx_driver PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes)
 # snx_build_info (the top CMakeLists, after CTest): the commit the games' stamps carry
-target_link_libraries(snx_driver PUBLIC scarletnx-common snx_setup snx_nx_module snx_lz4 OpenSSL::Crypto
+target_link_libraries(snx_driver PUBLIC scarletnx-common snx_setup snx_nx_module snx_lz4 snx_zstd OpenSSL::Crypto
                                         Threads::Threads snx_build_info hactool_lib snx_yyjson snx_demangle snx_settings)
 if(WIN32)
     target_link_libraries(snx_driver PUBLIC advapi32)

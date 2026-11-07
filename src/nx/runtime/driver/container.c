@@ -50,8 +50,8 @@ static SnxU64 le_bytes(const unsigned char* p, unsigned n) {
     return value;
 }
 
-/* -1 when path can't be read, else 0 for an NSP, 1 for an XCI, 2 for neither. A gamecard dump can start with the
-   card's 0x1000-byte key area, its header after it (LibHac's XciHeader) */
+/* -1 when path can't be read, else 0 for an NSP, 1 for an XCI, 2 for neither, 3 for a NUP. A gamecard dump can start
+   with the card's 0x1000-byte key area, its header after it (LibHac's XciHeader) */
 static int kind_of(const char* path) {
     unsigned char header[0x1104];
     size_t size;
@@ -64,6 +64,7 @@ static int kind_of(const char* path) {
     if (fclose(file)) failed = 1;
     if (failed) return -1;
     if (size >= 4 && !memcmp(header, "PFS0", 4)) return 0;
+    if (size >= 4 && !memcmp(header, "NUP\x01", 4)) return 3;
     if ((size >= 0x104 && (!memcmp(header + 0x100, "HEAD", 4) || !memcmp(header + 0x100, "DXCI", 4))) ||
         (size == sizeof header && (!memcmp(header + 0x1100, "HEAD", 4) || !memcmp(header + 0x1100, "DXCI", 4))))
         return 1;
@@ -74,14 +75,14 @@ int snx_container_kind(const char* path, int* xci) {
     char why[256];
     int kind = kind_of(path);
     if (kind < 0) return snx_error("cannot read %s: %s", path, snx_os_error(why, sizeof why));
-    if (kind == 2) return snx_error("%s is not an NSP/DNSP (PFS0) or an XCI/DXCI (HEAD/DXCI)", path);
-    *xci = kind;
+    if (kind == 2) return snx_error("%s is not an NSP/DNSP (PFS0), an XCI/DXCI (HEAD/DXCI) or a NUP", path);
+    *xci = kind == 1;
     return 0;
 }
 
 int snx_is_dump(const char* path) {
     int kind = kind_of(path);
-    return kind == 0 || kind == 1;
+    return kind == 0 || kind == 1 || kind == 3;
 }
 
 char* snx_find_keys(const char* given, const char* name, const char* repo) {
@@ -816,6 +817,124 @@ static int dump_start(SnxDump* dump, const char* keys, const char* title_keys, c
     return (dump->has_keys && load_prod_keys(dump, say)) || load_title_keys(dump);
 }
 
+/* a ref of a NUP: what it says of itself, with the bytes of the view it stands for */
+static void nup_ref(SnxNcaRef* ref, SnxU64 title, SnxU64 size) {
+    memset(ref, 0, sizeof *ref);
+    ref->found = 1;
+    ref->container = -1;
+    ref->title_id = title;
+    ref->size = size;
+    ref->info.title_id = title;
+    ref->info.decrypted = 1;
+}
+
+static SnxNup* nup_open(const char* path, int say) {
+    SnxNup* nup;
+    char size[32];
+    if (say) {
+        printf("Reading %s\n", path);
+        fflush(stdout);
+    }
+    nup = snx_nup_open(path);
+    if (nup && say) {
+        snx_size_text(snx_file_size(path), size, sizeof size);
+        printf("  a NUP, %s: %s%u update%s, %u DLC%s\n", size, snx_nup_has_game(nup) ? "a game, " : "",
+               snx_nup_updates(nup), snx_nup_updates(nup) == 1 ? "" : "s", snx_nup_dlcs(nup),
+               snx_nup_dlcs(nup) == 1 ? "" : "s");
+    }
+    return nup;
+}
+
+/* the game of dump->nup as the program, with the update in it when update is 1; *game set from it */
+static int nup_take_game(SnxDump* dump, int update) {
+    SnxU64 title, game, version;
+    if (snx_nup_title(dump->nup, &title, &game, &version)) return 1;
+    if (!snx_nup_has_game(dump->nup)) return snx_error("%s holds no game: give the game's dump", dump->opened[0]);
+    dump->game = game;
+    if (update) {
+        dump->view = snx_nup_game(dump->nup, NULL);
+        if (!dump->view) return 1;
+        SnxU64 bytes = snx_nup_bytes(dump->view);
+        nup_ref(&dump->program, title, bytes);
+        if (snx_nup_updates(dump->nup)) {
+            nup_ref(&dump->patch, title | 0x800, bytes);
+            dump->version = snx_nup_version(dump->view);
+        }
+        return 0;
+    }
+    nup_ref(&dump->program, title, 0);
+    return 0;
+}
+
+/* dump->nup_addon, a NUP alone or over a game: its updates when it has them and no game of its own, else its first
+   DLC. Over a base of another kind only a DLC goes: an update's RomFS lies over a NUP's tree */
+static int nup_take_addon(SnxDump* dump, int over_nup, int over_other, const char* path) {
+    SnxNup* addon = dump->nup_addon;
+    if (snx_nup_updates(addon) && !snx_nup_has_game(addon)) {
+        SnxU64 title, game, version;
+        if (over_other)
+            return snx_error("%s is a NUP's update, which goes over a NUP of its game: an XCI or NSP is no base for it",
+                             path);
+        if (snx_nup_title(addon, &title, &game, &version)) return 1;
+        dump->view = snx_nup_game(over_nup ? dump->nup : NULL, addon);
+        if (!dump->view) return 1;
+        nup_ref(&dump->patch, title, snx_nup_bytes(dump->view));
+        dump->version = version;
+        dump->game = game;
+        return 0;
+    }
+    if (!snx_nup_dlcs(addon)) return snx_error("%s holds no update or DLC", path);
+    SnxU64 title, version;
+    snx_nup_dlc(addon, 0, &title, &version);
+    if (snx_nup_dlcs(addon) > 1 && dump->say)
+        printf("  %u DLCs in one NUP: the game is given each of them\n", snx_nup_dlcs(addon));
+    dump->version = version;
+    dump->game = dump->program.found ? dump->game : snx_addon_guess(title);
+    return snx_dump_pick_aoc(dump, title);
+}
+
+int snx_dump_pick_aoc(SnxDump* dump, SnxU64 title) {
+    SnxNupView* view;
+    if (!dump->nup_addon) return 0;
+    view = snx_nup_aoc(dump->nup_addon, title);
+    if (!view) return 1;
+    snx_nup_view_free(dump->aoc_view);
+    dump->aoc_view = view;
+    nup_ref(&dump->aoc, title, snx_nup_image_size(view));
+    return 0;
+}
+
+/* snx_dump_open where base or addon is a NUP */
+static int nup_dump_open(SnxDump* dump, const char* base, const char* addon, int index, int say) {
+    int base_nup = base && snx_nup_is(base), addon_nup = addon && snx_nup_is(addon);
+    if (index) return snx_error("program %d of a NUP: a NUP holds one program", index);
+    if (base_nup) {
+        dump->opened[0] = base;
+        dump->nup = nup_open(base, say);
+        if (!dump->nup || nup_take_game(dump, !addon)) return 1;
+    } else if (base && ((dump->base = open_container(dump, base, say)) < 0 ||
+                        select_ncas(dump, dump->base, &dump->program, NULL, &dump->control)))
+        return 1;
+    if (addon_nup) {
+        dump->nup_addon = nup_open(addon, say);
+        if (!dump->nup_addon) return 1;
+        if (nup_take_addon(dump, base_nup, base && !base_nup, addon)) return 1;
+        if (base_nup && !dump->view) { /* a DLC over the game: the game's own files are still read */
+            dump->view = snx_nup_game(dump->nup, NULL);
+            if (!dump->view) return 1;
+        }
+        return 0;
+    }
+    if (!addon) return 0;
+    if ((dump->update = open_container(dump, addon, say)) < 0 || select_addon(dump, dump->update)) return 1;
+    if (dump->patch.found)
+        return snx_error("%s is an update of NCAs, whose patch reads its game's NCA, and a NUP has none: give a NUP of "
+                         "the update",
+                         addon);
+    dump->view = snx_nup_game(dump->nup, NULL);
+    return !dump->view;
+}
+
 int snx_dump_open(SnxDump* dump, const char* base, const char* addon, int index, const char* keys,
                   const char* title_keys, const char* repo, int say) {
     if (dump_start(dump, keys, title_keys, repo, say)) return 1;
@@ -823,6 +942,7 @@ int snx_dump_open(SnxDump* dump, const char* base, const char* addon, int index,
         return snx_error("program %d of a dump: an application numbers its programs from 0 to %d", index,
                          SNX_PROGRAMS_MAX - 1);
     dump->index = index;
+    if ((base && snx_nup_is(base)) || (addon && snx_nup_is(addon))) return nup_dump_open(dump, base, addon, index, say);
     /* each container's NCAs read as it is opened, the base's before the add-on's is */
     if (base && ((dump->base = open_container(dump, base, say)) < 0 ||
                  select_ncas(dump, dump->base, &dump->program, addon ? NULL : &dump->patch, &dump->control)))
@@ -839,7 +959,23 @@ int snx_dump_title(SnxDump* dump, const char* path, const char* keys, const char
     size_t count, i, nmetas;
     unsigned long unreadable;
     int application = 0;
-    if (dump_start(dump, keys, title_keys, repo, say) || (dump->base = open_container(dump, path, say)) < 0 ||
+    if (dump_start(dump, keys, title_keys, repo, say)) return 1;
+    if (snx_nup_is(path)) {
+        SnxU64 own_version;
+        SnxNup* nup = nup_open(path, say);
+        if (!nup) return 1;
+        if (snx_nup_has_game(nup)) {
+            dump->nup = nup;
+            dump->opened[0] = path;
+            if (snx_nup_title(nup, title, game, &own_version) || nup_take_game(dump, 1)) return 1;
+        } else {
+            dump->nup_addon = nup;
+            if (snx_nup_title(nup, title, game, &own_version) || nup_take_addon(dump, 0, 0, path)) return 1;
+        }
+        if (version) *version = own_version;
+        return 0;
+    }
+    if ((dump->base = open_container(dump, path, say)) < 0 ||
         read_ncas(dump, dump->base, &entries, &count, &ncas, &unreadable))
         return 1;
     /* a game's dump when its content meta says so, else when it has a game's program; an update's or a DLC's else */
@@ -865,13 +1001,57 @@ int snx_dump_title(SnxDump* dump, const char* path, const char* keys, const char
 }
 
 void snx_dump_close(SnxDump* dump) {
+    snx_nup_view_free(dump->view);
+    snx_nup_view_free(dump->aoc_view);
+    snx_nup_close(dump->nup);
+    snx_nup_close(dump->nup_addon);
     snx_hac_free(dump->hac);
     free(dump->keys);
     free(dump->title_keys);
     memset(dump, 0, sizeof *dump);
 }
 
+/* a view behind SnxHacFs: its ExeFS's entries are made once, and the view stays the dump's */
+typedef struct {
+    SnxNupView* view;
+    SnxHacEntry* files;
+    size_t count;
+} NupFs;
+static void nup_fs_free(void* data) {
+    free(((NupFs*)data)->files);
+    free(data);
+}
+static size_t nup_fs_files(void* data, const SnxHacEntry** files) {
+    *files = ((NupFs*)data)->files;
+    return ((NupFs*)data)->count;
+}
+static int nup_fs_read(void* data, size_t file, uint64_t offset, void* buffer, size_t size) {
+    return snx_nup_exefs_read(((NupFs*)data)->view, file, offset, buffer, size) ? -1 : 0;
+}
+static uint64_t nup_fs_romfs_size(const void* data) { return snx_nup_image_size(((const NupFs*)data)->view); }
+static int nup_fs_read_romfs(void* data, uint64_t offset, void* buffer, size_t size) {
+    return snx_nup_image_read(((NupFs*)data)->view, offset, buffer, size) ? -1 : 0;
+}
+static const SnxHacFsOps nup_fs_ops = {nup_fs_free, nup_fs_files, nup_fs_read, nup_fs_romfs_size, nup_fs_read_romfs};
+static SnxHacFs* nup_fs(SnxNupView* view) {
+    NupFs* own = (NupFs*)calloc(1, sizeof *own);
+    SnxHacFs* fs;
+    if (!own) return NULL;
+    own->view = view;
+    own->count = snx_nup_exefs_count(view);
+    own->files = (SnxHacEntry*)calloc(own->count ? own->count : 1, sizeof *own->files);
+    fs = own->files ? snx_hac_fs_custom(&nup_fs_ops, own) : NULL;
+    if (!fs) {
+        nup_fs_free(own);
+        snx_error("out of memory reading a NUP");
+        return NULL;
+    }
+    for (size_t i = 0; i < own->count; ++i) snx_nup_exefs_file(view, i, &own->files[i].name, &own->files[i].size);
+    return fs;
+}
+
 SnxHacFs* snx_dump_fs(SnxDump* dump) {
+    if (dump->view) return nup_fs(dump->view);
     const SnxNcaRef* top = dump->patch.found ? &dump->patch : &dump->program;
     int under = dump->patch.found && dump->program.found;
     SnxHacFs* fs = snx_hac_fs_open(dump->hac, top->container, top->entry, under ? dump->program.container : -1,
@@ -886,6 +1066,7 @@ SnxHacFs* snx_dump_html_fs(SnxDump* dump) {
 }
 
 SnxHacFs* snx_dump_aoc_fs(SnxDump* dump) {
+    if (dump->aoc_view) return nup_fs(dump->aoc_view);
     SnxHacFs* fs = snx_hac_fs_open(dump->hac, dump->aoc.container, dump->aoc.entry, -1, 0);
     if (!fs) snx_hac_error("the DLC's Data NCA cannot be read");
     return fs;
@@ -969,7 +1150,29 @@ static SnxHacFs* control_fs(SnxDump* dump, const char** why) {
     if (!fs) *why = "its Control NCA cannot be read";
     return fs;
 }
+/* the record of a NUP's newest package that has one, the add-on's before the base's, with why in *why without one */
+static unsigned char* nup_meta(const SnxDump* dump, unsigned type, size_t* size, const char** why, const char* none) {
+    unsigned char* meta = dump->nup_addon ? snx_nup_meta(dump->nup_addon, type, size) : NULL;
+    if (!meta && dump->nup) meta = snx_nup_meta(dump->nup, type, size);
+    if (!meta) *why = none;
+    return meta;
+}
+char* snx_dump_shown(const SnxDump* dump) {
+    const char* why;
+    size_t size = 0;
+    unsigned char* name = dump->nup || dump->nup_addon ? nup_meta(dump, SNX_NUP_META_NAME, &size, &why, "") : NULL;
+    char* shown = NULL;
+    if (name && snx_shown_valid((const char*)name, size)) {
+        shown = (char*)snx_alloc(size + 1);
+        memcpy(shown, name, size);
+        shown[size] = 0;
+    }
+    free(name);
+    return shown;
+}
 unsigned char* snx_dump_nacp(SnxDump* dump, size_t* size, const char** why) {
+    if (dump->nup || dump->nup_addon)
+        return nup_meta(dump, SNX_NUP_META_NACP, size, why, "its NUP holds no control.nacp");
     SnxHacFs* fs = control_fs(dump, why);
     unsigned char* nacp;
     if (!fs) return NULL;
@@ -985,6 +1188,13 @@ unsigned char* snx_dump_icon(SnxDump* dump, size_t* size, const char** why) {
         "German",          "LatinAmericanSpanish", "Spanish",           "Italian",
         "Dutch",           "CanadianFrench",       "Portuguese",        "Russian",
         "Korean",          "TraditionalChinese",   "SimplifiedChinese", "BrazilianPortuguese"};
+    if (dump->nup || dump->nup_addon) { /* a JPEG is what Games shows: a NUP's can be a PNG too */
+        unsigned char* image = nup_meta(dump, SNX_NUP_META_ICON, size, why, "its NUP holds no icon");
+        if (!image || (*size >= 2 && image[0] == 0xff && image[1] == 0xd8)) return image;
+        free(image);
+        *why = "its NUP's icon is not a JPEG";
+        return NULL;
+    }
     SnxHacFs* fs = control_fs(dump, why);
     unsigned char* icon = NULL;
     char name[48];

@@ -423,7 +423,18 @@ struct SnxHacFs {
     size_t count;
     storage_t *romfs; /* the RomFS image's storage, NULL without one */
     uint64_t romfs_offset, romfs_size;
+    const SnxHacFsOps *ops; /* not NULL for file systems that are not an NCA's: the rest is unused then */
+    void *data;
 };
+
+SnxHacFs *snx_hac_fs_custom(const SnxHacFsOps *ops, void *data) {
+    SnxHacFs *fs = calloc(1, sizeof *fs);
+    if (fs) {
+        fs->ops = ops;
+        fs->data = data;
+    }
+    return fs;
+}
 
 int snx_hac_map(SnxHac *hac, int container, const void *data, uint64_t size) {
     Container *c = &hac->containers[container];
@@ -476,6 +487,11 @@ fail:
 
 void snx_hac_fs_free(SnxHacFs *fs) {
     if (!fs) return;
+    if (fs->ops) {
+        fs->ops->free(fs->data);
+        free(fs);
+        return;
+    }
     program_free(&fs->nca, &fs->base);
     free(fs->files);
     memset(fs, 0, sizeof *fs); /* the keys */
@@ -526,11 +542,13 @@ int snx_hac_cnmt(SnxHac *hac, int container, size_t entry, unsigned char **data,
 }
 
 size_t snx_hac_fs_files(SnxHacFs *fs, const SnxHacEntry **files) {
+    if (fs->ops) return fs->ops->files(fs->data, files);
     *files = fs->files;
     return fs->count;
 }
 
 int snx_hac_fs_read(SnxHacFs *fs, size_t file, uint64_t offset, void *buffer, size_t size) {
+    if (fs->ops) return fs->ops->read(fs->data, file, offset, buffer, size);
     const SnxHacEntry *e = &fs->files[file];
     io.message[0] = 0; /* snx_hac_message says this read's failure, not an earlier one's */
     if (offset > e->size || size > e->size - offset) {
@@ -541,9 +559,13 @@ int snx_hac_fs_read(SnxHacFs *fs, size_t file, uint64_t offset, void *buffer, si
     return storage_read(fs->exefs->storage, e->offset + offset, buffer, size) ? 0 : -1;
 }
 
-uint64_t snx_hac_fs_romfs_size(const SnxHacFs *fs) { return fs->romfs ? fs->romfs_size : 0; }
+uint64_t snx_hac_fs_romfs_size(const SnxHacFs *fs) {
+    if (fs->ops) return fs->ops->romfs_size(fs->data);
+    return fs->romfs ? fs->romfs_size : 0;
+}
 
 int snx_hac_fs_read_romfs(SnxHacFs *fs, uint64_t offset, void *buffer, size_t size) {
+    if (fs->ops) return fs->ops->read_romfs(fs->data, offset, buffer, size);
     io.message[0] = 0; /* snx_hac_message says this read's failure, not an earlier one's */
     if (!fs->romfs) {
         snx_hac_fprintf(stderr, "The program NCA has no RomFS\n");

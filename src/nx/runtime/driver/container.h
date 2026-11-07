@@ -1,13 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* A Switch dump (XCI or NSP, or their decrypted DXCI and DNSP) opened with hactool in this process, its keys loaded
-   and its NCAs picked as -x extracts them: what the extraction, the recompiler (a dump given to -r) and the runtime (a
+   and its NCAs picked as -x extracts them, or a NUP (nup.h), which has no NCA and stands in for what they give: what
+   the extraction, the recompiler (a dump given to -r) and the runtime (a
    game whose dump is not extracted, read in place) share */
 #ifndef SNX_CONTAINER_H
 #define SNX_CONTAINER_H
 
 #include "common/utilities/common.h"
 #include "nx/runtime/driver/hactool/snx_hac.h"
+#include "nx/runtime/driver/nup.h"
 
 /* an NCA where it lies: a container's number (snx_hac_open) and its entry, found 0 for none */
 typedef struct {
@@ -37,14 +39,18 @@ typedef struct {
        shows (the update's when it has one; found 0 without a content meta naming it) */
     SnxNcaRef program, patch, control, aoc, html;
     const char* opened[4]; /* the files of the containers opened, by their index, which the messages name */
+    /* a NUP in place of a container: the base's and the add-on's, and what is read from them, the program's and the
+       DLC's. A ref of a NUP has no container, and says it is decrypted */
+    SnxNup *nup, *nup_addon;
+    SnxNupView *view, *aoc_view;
 } SnxDump;
 
 /* prod.keys or title.keys: given, else in repo (NULL for none), else in ~/.switch; the path in repo when it is in
    neither. NULL when out of memory */
 char* snx_find_keys(const char* given, const char* name, const char* repo);
-/* 0 with *xci set for an NSP (0) or an XCI (1), else nonzero, said why */
+/* 0 with *xci set for an NSP or a NUP (0) or an XCI (1), else nonzero, said why */
 int snx_container_kind(const char* path, int* xci);
-/* 1 for a file whose header is an NSP's or an XCI's, else 0, saying nothing */
+/* 1 for a file whose header is an NSP's, an XCI's or a NUP's, else 0, saying nothing */
 int snx_is_dump(const char* path);
 /* what failed, with hactool's last error after it when it said one: 1 */
 int snx_hac_error(const char* what);
@@ -55,7 +61,8 @@ int snx_hac_error(const char* what);
    lacks too); snx_dump_close either way */
 int snx_dump_open(SnxDump* dump, const char* base, const char* addon, int index, const char* keys,
                   const char* title_keys, const char* repo, int say);
-/* path opened alone, with the keys as snx_dump_open takes them: a game's dump (program, and the patch it may have), whose title ID is its
+/* path opened alone, with the keys as snx_dump_open takes them: a game's dump (program, and the patch it may have),
+   whose title ID is its
    program's, or else an add-on's (patch or aoc, in update), its title ID the add-on's own and game the game it belongs
    to, as its content meta names it (snx_addon_kind(game, title) tells which), and its version in *version when version
    is not NULL (SNX_NO_VERSION without a content meta, or for a game). Its programs in dump->programs. 0, else
@@ -68,6 +75,9 @@ void snx_dump_close(SnxDump* dump);
 SnxHacFs* snx_dump_fs(SnxDump* dump);
 /* a DLC's RomFS image (aoc) read in place, or NULL, said why */
 SnxHacFs* snx_dump_aoc_fs(SnxDump* dump);
+/* the DLC of that title as aoc, where one file holds several, as a NUP can: 0, else nonzero, said why. Other dumps
+   keep the one they picked, which the caller checks */
+int snx_dump_pick_aoc(SnxDump* dump, SnxU64 title);
 /* the HtmlDocument NCA's RomFS read in place (html-document/ in it), or NULL without one */
 SnxHacFs* snx_dump_html_fs(SnxDump* dump);
 /* 0 when the keys an NCA of dump picked needs are there, else nonzero with a line saying which are missing, how far
@@ -79,6 +89,8 @@ void snx_size_text(SnxU64 bytes, char* text, size_t size);
 unsigned char* snx_romfs_file(SnxHacFs* fs, const char* name, size_t* size);
 /* the Control NCA's control.nacp, malloc'd, or NULL with why in *why */
 unsigned char* snx_dump_nacp(SnxDump* dump, size_t* size, const char** why);
+/* the name a NUP gives its game beside any control.nacp, malloc'd, or NULL for none fit to show or another dump */
+char* snx_dump_shown(const SnxDump* dump);
 /* the Control NCA's icon, a JPEG (icon_<language>.dat, the first of control.nacp's languages it has), malloc'd, or
    NULL with why in *why */
 unsigned char* snx_dump_icon(SnxDump* dump, size_t* size, const char** why);

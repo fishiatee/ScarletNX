@@ -13,7 +13,8 @@ char* snx_game_title(const char* name, const SnxNpdm* npdm, const char* input);
    same game is the same files whatever its dump was called */
 char* snx_game_name(const char* name, const SnxNpdm* npdm, const char* input);
 /* what the game is shown as (its window, the recompile's lines, its settings' head): name when given, else the name
-   in its control.nacp, else its title. A name that is a title ID (snx_title_parse) is its files' name: the name in its
+   in its control.nacp, else program->shown, else its title. A name that is a title ID (snx_title_parse) is its
+   files' name: the name in its
    control.nacp is shown over it, the ID only when no language has one. why: why the control.nacp it has gave no name
    (snx_nacp_name_why), "" when it gave one, was not read, or there is none */
 char* snx_game_shown(const char* name, const SnxProgram* program, char* why, size_t why_size);

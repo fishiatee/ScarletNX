@@ -24,7 +24,7 @@ For the keyboard-controlled SDL3 menu and file drops, see [GUI](GUI.md).
 
 ## Extract → AOT → run
 
-Pass a single XCI, NSP, DXCI or DNSP to recompile and play:
+Pass a single XCI, NSP, DXCI, DNSP or NUP to recompile and play:
 
 ```sh
 ./build/scarletnx "Game.xci"
@@ -102,6 +102,14 @@ Use the separate commands for other compiler options.
 DXCI and DNSP with decrypted content need no keys. Containers are identified by their headers,
 including renamed files. A matching bundled update is applied automatically. DLC-only and update-only dumps cannot
 be used as a base game.
+
+A NUP holds the unencrypted ExeFS and RomFS of a game, of Switch or Switch 2, with its updates and DLCs, and needs no
+keys. It works as the other dumps do: it is read in place unless you extract it, and `--update` takes a NUP of an
+update or a DLC over a NUP of its game. Only the newest update is used: its ExeFS replaces the base's, and its RomFS
+goes over the base's. A game that a NUP holds gets each DLC in it, and `-x --dlc ID` extracts one of them. An update
+made of NCAs cannot go over a NUP, and a NUP's update cannot go over an XCI or NSP, because the two have different
+forms. A NUP that has no `control.nacp` shows the name that it gives for itself, and the game sees no
+`control.nacp`, as with any dump that has none.
 
 ```powershell
 .\build\scarletnx.exe "C:\Games\Game.dxci"
